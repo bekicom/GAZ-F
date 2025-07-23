@@ -795,6 +795,11 @@ export default function Kassa() {
               render: (_, record) => (
                 <Button
                   type="primary"
+                  disabled={
+                    storeProducts?.find(
+                      (product) => product.product_id?._id === record._id
+                    )?.quantity <= 0
+                  }
                   onClick={() => handleSelectProduct(record)}
                 >
                   Tanlash
@@ -874,6 +879,12 @@ export default function Kassa() {
                       </span>
                       <Button
                         onClick={() => handleQuantityChange(record._id, 1)}
+                        disabled={
+                          record.quantity ===
+                          storeProducts?.find(
+                            (product) => product.product_id?._id === record._id
+                          )?.quantity
+                        }
                       >
                         +
                       </Button>

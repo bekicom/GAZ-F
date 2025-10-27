@@ -55,9 +55,7 @@ export default function Kassa() {
   const [vazvratModalVisible, setVazvratModalVisible] = useState(false);
   const receiptRef = useRef();
   const [debtDueDate, setDebtDueDate] = useState(null);
-  console.log("Debt Due Date:", debtDueDate);
 
-  //
   const {
     data: products,
     isLoading,
@@ -73,7 +71,7 @@ export default function Kassa() {
   const [createDebtor] = useCreateDebtorMutation();
   const [location, setLocation] = useState(null);
   const [sotuvtarixiModalVisible, setSotuvtarixiModalVisible] = useState(false);
-  const [currency, setCurrency] = useState("sum");
+  const currency = "usd";
   const [nasiyaModal, setNasiyaModal] = useState(false);
   const [createNasiya] = useCreateNasiyaMutation();
   const [completeNasiya] = useCompleteNasiyaMutation();
@@ -84,6 +82,7 @@ export default function Kassa() {
   const { data: debtors = [] } = useGetDebtorsQuery();
   const [selectedDebtor, setSelectedDebtor] = useState(null);
   const [editDebtor] = useEditDebtorMutation();
+
   const handlePrint = useReactToPrint({
     content: () => receiptRef.current,
     documentTitle: "new document",
@@ -160,7 +159,7 @@ export default function Kassa() {
       if (item._id === productId) {
         return {
           ...item,
-          sell_price: newPrice === "" ? 0 : parseFloat(newPrice) || 0, // Bo‘sh yoki noto‘g‘ri qiymat bo‘lsa 0
+          sell_price: newPrice === "" ? 0 : parseFloat(newPrice) || 0,
         };
       }
       return item;
@@ -179,8 +178,7 @@ export default function Kassa() {
   const handleSellProducts = async () => {
     setChekModal(true);
     try {
-      const debtorProducts = [];
-
+      // Avval mahsulotlarni skaladdan yoki dokondan ayirish
       for (const product of selectedProducts) {
         if (location === "skalad") {
           if (product.stock < product.quantity) {
@@ -189,7 +187,6 @@ export default function Kassa() {
             );
             return;
           }
-
           const newStock = product.stock - product.quantity;
           await updateProduct({ id: product._id, stock: newStock }).unwrap();
         } else if (location === "dokon") {
@@ -208,111 +205,55 @@ export default function Kassa() {
             );
             return;
           }
-
           await sellProductFromStore({
             product_id: storeProduct.product_id._id,
             quantity: product.quantity,
           }).unwrap();
         }
-
-        if (paymentMethod !== "qarz") {
-          const sale = {
-            product_id: product._id,
-            product_name: product.product_name,
-            sell_price: product.sell_price,
-            quantity: product.quantity,
-            currency,
-            total_price_sum:
-              product.sell_price * product.quantity * usdRateData?.rate,
-            total_price:
-              currency === "usd"
-                ? product.sell_price * product.quantity
-                : product.sell_price * product.quantity * usdRateData?.rate,
-            payment_method: paymentMethod,
-            product_quantity: product.quantity,
-            debtor_name: null,
-            debtor_phone: null,
-            due_date: null,
-          };
-          await recordSale(sale).unwrap();
-        } else {
-          debtorProducts.push({
-            product_id: product._id,
-            product_name: product.product_name,
-            product_quantity: product.quantity,
-            sell_price: product.sell_price,
-            due_date: debtDueDate,
-          });
-        }
       }
 
-      // Asosiy muammo bu qismda:
+      // Keyin to'lov usuliga qarab saqlash
       if (paymentMethod === "qarz") {
-        const totalDebt = debtorProducts.reduce(
-          (acc, p) => acc + p.sell_price * p.product_quantity,
-          0
-        );
+        // QARZ uchun
+        const debtorProducts = selectedProducts.map((product) => ({
+          product_id: product._id,
+          product_name: product.product_name,
+          product_quantity: product.quantity,
+          sell_price: product.sell_price,
+          due_date: debtDueDate,
+        }));
 
-        // MUAMMO: Bu yerda currency bo'yicha konvertatsiya qilinmayapti
-        // Tuzatilgan kod:
-
-        const totalDebtInSelectedCurrency = debtorProducts.reduce((acc, p) => {
-          const productTotal = p.sell_price * p.product_quantity;
-          // Agar currency USD bo'lsa, USD da qoldirish, aks holda so'mga o'tkazish
-          return (
-            acc +
-            (currency === "usd"
-              ? productTotal
-              : productTotal * usdRateData?.rate)
-          );
+        const totalDebtInUSD = debtorProducts.reduce((acc, p) => {
+          return acc + p.sell_price * p.product_quantity;
         }, 0);
 
         if (!selectedDebtor) {
+          // Yangi qarzdor yaratish
           const debtorPayload = {
             name: debtorName?.trim(),
             phone: debtorPhone?.trim(),
             due_date: debtDueDate,
-            currency,
-            debt_amount: totalDebtInSelectedCurrency, // Bu yerda tuzatilgan summa
-            products: debtorProducts.map((p) => ({
-              ...p,
-              // Mahsulot narxini ham currency bo'yicha saqlash
-              sell_price:
-                currency === "usd"
-                  ? p.sell_price
-                  : p.sell_price * usdRateData?.rate,
-            })),
+            currency: "usd",
+            debt_amount: totalDebtInUSD,
+            products: debtorProducts,
           };
           await createDebtor(debtorPayload).unwrap();
         } else {
+          // Mavjud qarzdorga qo'shish
           const debtor = debtors.find((d) => d._id === selectedDebtor);
           if (!debtor) {
             message.error("Tanlangan qarzdor topilmadi");
             return;
           }
 
-          // Mavjud qarzga qo'shish
           const newDebtAmount = debtorProducts.reduce((acc, p) => {
-            const productTotal = p.sell_price * p.product_quantity;
-            return (
-              acc +
-              (currency === "usd"
-                ? productTotal
-                : productTotal * usdRateData?.rate)
-            );
+            return acc + p.sell_price * p.product_quantity;
           }, 0);
 
           const updatedDebtAmount = (debtor.debt_amount || 0) + newDebtAmount;
-
           const updatedProducts = [
             ...(debtor.products || []),
-            ...debtorProducts.map((p) => ({
-              ...p,
-              sell_price:
-                currency === "usd"
-                  ? p.sell_price
-                  : p.sell_price * usdRateData?.rate,
-            })),
+            ...debtorProducts,
           ];
 
           await editDebtor({
@@ -324,7 +265,28 @@ export default function Kassa() {
             },
           }).unwrap();
         }
+      } else {
+        // NAQD yoki PLASTIK uchun
+        for (const product of selectedProducts) {
+          const sale = {
+            product_id: product._id,
+            product_name: product.product_name,
+            sell_price: product.sell_price,
+            quantity: product.quantity,
+            currency: "usd",
+            total_price_sum:
+              product.sell_price * product.quantity * usdRateData?.rate,
+            total_price: product.sell_price * product.quantity,
+            payment_method: paymentMethod,
+            product_quantity: product.quantity,
+            debtor_name: null,
+            debtor_phone: null,
+            due_date: null,
+          };
+          await recordSale(sale).unwrap();
+        }
       }
+
       setSelectedProducts([]);
       message.success("Mahsulotlar muvaffaqiyatli sotildi!");
       setIsModalVisible(false);
@@ -409,7 +371,7 @@ export default function Kassa() {
                 <td>Товар</td>
                 <td>Улчов</td>
                 <td>Сони</td>
-                <td>Сумма</td>
+                <td>Сумма (USD)</td>
               </tr>
             </thead>
             <tbody>
@@ -420,11 +382,7 @@ export default function Kassa() {
                   <td style={{ paddingBlock: "20px" }}>{item.count_type}</td>
                   <td style={{ paddingBlock: "20px" }}>{item.quantity}</td>
                   <td style={{ paddingBlock: "20px" }}>
-                    {(
-                      item.quantity *
-                      item.sell_price *
-                      (currency === "usd" ? 1 : usdRateData?.rate)
-                    ).toLocaleString()}
+                    {(item.quantity * item.sell_price).toLocaleString()}
                   </td>
                 </tr>
               ))}
@@ -432,10 +390,7 @@ export default function Kassa() {
                 <td colSpan={4} style={{ border: "none" }}></td>
                 <td>
                   <h1>Жами:</h1>
-                  {(currency === "usd"
-                    ? totalAmount
-                    : totalAmount * usdRateData?.rate
-                  ).toLocaleString()}
+                  {totalAmount.toLocaleString()} USD
                 </td>
               </tr>
             </tbody>
@@ -444,12 +399,6 @@ export default function Kassa() {
             Bizda yetkazib berish xizmati mavjud: Bahromjon{" "}
             <span>+99891 367 70 80</span> <br />
           </h1>
-          {/* <p
-            style={{ fontSize: "20px", textAlign: "start", fontWeight: "bold" }}
-          >
-            <span>Бизда етказиб бериш хизмати мавжуд</span> <br />
-            Magazin <span>+99898 772 00 72</span> <br />
-          </p> */}
         </div>
       </Modal>
 
@@ -561,7 +510,7 @@ export default function Kassa() {
               productRefetch();
             } catch (error) {
               console.error("Xatolik:", error);
-              message.error("Xatolik yuz berdi, iltimos qayta urinib ko‘ring!");
+              message.error("Xatolik yuz berdi, iltimos qayta urinib ko'ring!");
             }
           }}
         >
@@ -744,30 +693,10 @@ export default function Kassa() {
               key: "purchase_price",
             },
             {
-              title: (
-                <span>
-                  Narxi{" "}
-                  <Select
-                    value={currency}
-                    onChange={(value) => setCurrency(value)}
-                    style={{ width: 100 }}
-                  >
-                    <Option value="sum">So'm</Option>
-                    <Option value="usd">USD</Option>
-                  </Select>
-                </span>
-              ),
+              title: "Narxi (USD)",
               dataIndex: "sell_price",
               key: "sell_price",
-              render: (text, record) => (
-                <span>
-                  {currency === "usd"
-                    ? `${record.sell_price.toLocaleString()} USD`
-                    : `${(
-                        record.sell_price * usdRateData?.rate
-                      ).toLocaleString()} So'm`}
-                </span>
-              ),
+              render: (text) => `${text.toLocaleString()} USD`,
             },
             {
               title: "Dokon Miqdori",
@@ -788,7 +717,6 @@ export default function Kassa() {
               dataIndex: "kimdan_kelgan",
               key: "kimdan_kelgan",
             },
-
             {
               title: "Harakatlar",
               key: "actions",
@@ -828,34 +756,14 @@ export default function Kassa() {
                   key: "purchase_price",
                 },
                 {
-                  title: (
-                    <span>
-                      Narxi{" "}
-                      <select
-                        value={currency}
-                        onChange={(e) => setCurrency(e.target.value)}
-                        style={{ width: 100 }}
-                      >
-                        <option value="sum">So'm</option>
-                        <option value="usd">USD</option>
-                      </select>
-                    </span>
-                  ),
+                  title: "Narxi (USD)",
                   key: "sell_price",
                   render: (_, record) => (
                     <input
                       type="number"
-                      value={
-                        currency === "usd"
-                          ? record.sell_price
-                          : Math.round(record.sell_price * usdRateData?.rate)
-                      }
+                      value={record.sell_price}
                       onChange={(e) => {
-                        const value = e.target.value; // To‘g‘ridan-to‘g‘ri input qiymatini olish
-                        handleSellPriceChange(
-                          record._id,
-                          currency === "usd" ? value : value / usdRateData?.rate
-                        );
+                        handleSellPriceChange(record._id, e.target.value);
                       }}
                       style={{ width: "100px" }}
                     />
@@ -910,9 +818,7 @@ export default function Kassa() {
             />
             <div style={{ marginTop: 20, fontSize: "1.5em" }}>
               <strong>Umumiy summa: </strong>
-              {currency === "usd"
-                ? `${totalAmount.toLocaleString()} USD`
-                : `${(totalAmount * usdRateData?.rate).toLocaleString()} So'm`}
+              {totalAmount.toLocaleString()} USD
             </div>
             <Button
               type="primary"
@@ -981,7 +887,6 @@ export default function Kassa() {
                   </Select>
                 </Form.Item>
 
-                {/* Faqat yangi xaridor tanlanganda inputlar ko‘rinadi */}
                 {!selectedDebtor && (
                   <>
                     <Form.Item label="Yangi xaridor ismi">

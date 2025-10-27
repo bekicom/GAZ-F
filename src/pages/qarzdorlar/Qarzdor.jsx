@@ -35,33 +35,6 @@ export default function Qarzdor() {
   const [form] = Form.useForm();
   const { data: usdRateData } = useGetUsdRateQuery();
 
-  const formatNumber = (num, curr) => {
-    const formatted = Number(num || 0).toLocaleString("uz-UZ");
-    return curr === "usd" ? `${formatted} $` : `${formatted} so'm`;
-  };
-
-  const correctedPrice = (price, currency) => {
-    if (currency === "usd" && price > 0 && price < 100) {
-      return price * usdRateData.rate;
-    }
-    return price;
-  };
-
-  const correctedTotal = (price, quantity, currency) => {
-    return correctedPrice(price, currency) * quantity;
-  };
-
-  // Qarzdorning jami qarzini to'g'ri hisoblash
-  const calculateTotalDebt = (debtor) => {
-    const currency = debtor.currency || "usd";
-    const rate = usdRateData?.rate || 1;
-
-    if (currency === "usd") {
-      return debtor.debt_amount * rate; // USD ni So'mga o'tkazish
-    }
-    return debtor.debt_amount; // So'm bo'lsa o'zgarishsiz
-  };
-
   const handlePay = async (debtorId, productId) => {
     const key = `${debtorId}_${productId}`;
     const amount = Number(paymentAmounts[key]);
@@ -76,7 +49,7 @@ export default function Qarzdor() {
         id: debtorId,
         product_id: productId,
         amount,
-        currency: "usd", // yoki siz frontendda tanlasa, uni oling
+        currency: "usd",
         rate: usdRateData?.rate || 1,
       }).unwrap();
 
@@ -105,7 +78,6 @@ export default function Qarzdor() {
       }).unwrap();
       message.success("Qaytarildi");
       setReturnQuantities((prev) => ({ ...prev, [key]: "" }));
-      setReturnQuantities((prev) => ({ ...prev, [key]: "" }));
       setModalOpen(false);
       setSelectedDebtor(null);
       refetch();
@@ -122,20 +94,10 @@ export default function Qarzdor() {
       render: (_, record) => `${record.products?.length || 0} ta mahsulot`,
     },
     {
-      title: "Jami qarz",
+      title: "Jami qarz (USD)",
       render: (_, record) => {
-        const totalDebt = calculateTotalDebt(record);
-        const currency = record.currency || "usd";
-
-        // Har doim So'mda ko'rsatish
-        return `${totalDebt.toLocaleString("uz-UZ")} so'm`;
-      },
-    },
-    {
-      title: "Valyuta",
-      render: (_, record) => {
-        const currency = record.currency || "usd";
-        return currency === "usd" ? "USD" : "So'm";
+        const debtAmount = Number(record.debt_amount || 0);
+        return `${debtAmount.toLocaleString("uz-UZ")} $`;
       },
     },
     {
@@ -167,24 +129,16 @@ export default function Qarzdor() {
                 dataSource={record.payment_log}
                 columns={[
                   {
-                    title: "Summa",
+                    title: "Summa (USD)",
                     dataIndex: "amount",
                     key: "amount",
-                    render: (amount, paymentRecord) => {
-                      const currency =
-                        paymentRecord.currency || record.currency || "usd";
-                      return formatNumber(amount, currency);
-                    },
-                  },
-                  {
-                    title: "Valyuta",
-                    dataIndex: "currency",
-                    render: (currency) => (currency === "usd" ? "USD" : "So'm"),
+                    render: (amount) =>
+                      `${Number(amount).toLocaleString("uz-UZ")} $`,
                   },
                   {
                     title: "Sana",
                     dataIndex: "date",
-                    render: (text) => moment(text).format("YYYY-MM-DD"),
+                    render: (text) => moment(text).format("YYYY-MM-DD HH:mm"),
                   },
                 ]}
                 pagination={false}
@@ -223,8 +177,9 @@ export default function Qarzdor() {
           onFinish={async (values) => {
             try {
               values.rate = usdRateData?.rate || 1;
-              values.id = paymentDebtor._id; // paymentDebtor o'rniga paymentDebtor._id
+              values.id = paymentDebtor._id;
               values.amount = Number(values.amount);
+              values.currency = "usd"; // Faqat USD
               await createPayment(values).unwrap();
               message.success("To'lov amalga oshirildi");
               setPaymentModalOpen(false);
@@ -239,24 +194,13 @@ export default function Qarzdor() {
           layout="vertical"
         >
           <Form.Item
-            label="To'lov summasi"
+            label="To'lov summasi (USD)"
             name="amount"
             rules={[{ required: true, message: "Summani kiriting" }]}
           >
-            <Input type="number" min={1} />
+            <Input type="number" min={0.01} step="0.01" placeholder="0.00" />
           </Form.Item>
 
-          <Form.Item
-            label="Valyuta"
-            name="currency"
-            rules={[{ required: true, message: "Valyutani tanlang" }]}
-            initialValue="usd"
-          >
-            <Select>
-              <Select.Option value="usd">USD</Select.Option>
-              <Select.Option value="sum">So'm</Select.Option>
-            </Select>
-          </Form.Item>
           <Form.Item>
             <Button type="primary" htmlType="submit">
               To'lash
@@ -276,17 +220,9 @@ export default function Qarzdor() {
           const productId = product.product_id?._id || product.product_id;
           const key = `${selectedDebtor._id}_${productId}_${index}`;
 
-          const debtorCurrency = selectedDebtor.currency || "usd";
-          const usdRate = usdRateData?.rate || 1;
-
           const originalPrice = Number(product.sell_price || 0);
           const quantity = Number(product.product_quantity || 1);
-
-          // Valyuta bo'yicha to'g'ri narx hisoblash
-          const displayPrice =
-            debtorCurrency === "sum" ? originalPrice : originalPrice * usdRate;
-
-          const total = displayPrice * quantity;
+          const total = originalPrice * quantity;
 
           return (
             <div
@@ -302,20 +238,10 @@ export default function Qarzdor() {
                 <b>Soni:</b> {quantity}
               </p>
               <p>
-                <b>Narxi:</b>{" "}
-                {debtorCurrency === "sum"
-                  ? `${displayPrice.toLocaleString("uz-UZ")} so'm`
-                  : `${displayPrice.toLocaleString(
-                      "uz-UZ"
-                    )} so'm (${originalPrice.toLocaleString("uz-UZ")} $)`}
+                <b>Narxi:</b> {originalPrice.toLocaleString("uz-UZ")} $
               </p>
               <p>
-                <b>Qarz:</b>{" "}
-                {debtorCurrency === "sum"
-                  ? `${total.toLocaleString("uz-UZ")} so'm`
-                  : `${total.toLocaleString("uz-UZ")} so'm (${(
-                      total / usdRate
-                    ).toLocaleString("uz-UZ")} $)`}
+                <b>Qarz:</b> {total.toLocaleString("uz-UZ")} $
               </p>
               <p>
                 <b>Sotish vaqti:</b>{" "}

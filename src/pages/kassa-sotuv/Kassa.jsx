@@ -267,7 +267,7 @@ export default function Kassa() {
         }
       } else {
         // NAQD yoki PLASTIK uchun
-        for (const product of selectedProducts) {
+        const salePromises = selectedProducts.map((product) => {
           const sale = {
             product_id: product._id,
             product_name: product.product_name,
@@ -283,8 +283,10 @@ export default function Kassa() {
             debtor_phone: null,
             due_date: null,
           };
-          await recordSale(sale).unwrap();
-        }
+          return recordSale(sale).unwrap();
+        });
+
+        await Promise.all(salePromises);
       }
 
       setSelectedProducts([]);

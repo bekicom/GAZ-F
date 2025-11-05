@@ -175,130 +175,161 @@ export default function Kassa() {
     setIsModalVisible(false);
   };
 
-  const handleSellProducts = async () => {
-    setChekModal(true);
-    try {
-      // Avval mahsulotlarni skaladdan yoki dokondan ayirish
-      for (const product of selectedProducts) {
-        if (location === "skalad") {
-          if (product.stock < product.quantity) {
-            message.error(
-              `${product.product_name} mahsuloti skaladda yetarli emas!`
-            );
-            return;
-          }
-          const newStock = product.stock - product.quantity;
-          await updateProduct({ id: product._id, stock: newStock }).unwrap();
-        } else if (location === "dokon") {
-          const storeProduct = storeProducts?.find(
-            (p) => p.product_id?._id === product._id
+const handleSellProducts = async () => {
+  try {
+    // 1. Avval validatsiya qilish
+    for (const product of selectedProducts) {
+      if (location === "skalad") {
+        if (product.stock < product.quantity) {
+          message.error(
+            `${product.product_name} mahsuloti skaladda yetarli emas!`
           );
-          if (!storeProduct) {
-            message.error(
-              `${product.product_name} mahsuloti dokonda mavjud emas!`
-            );
-            return;
-          }
-          if (storeProduct.quantity < product.quantity) {
-            message.error(
-              `${product.product_name} mahsuloti dokonda yetarli emas!`
-            );
-            return;
-          }
-          await sellProductFromStore({
-            product_id: storeProduct.product_id._id,
-            quantity: product.quantity,
-          }).unwrap();
+          return;
+        }
+      } else if (location === "dokon") {
+        const storeProduct = storeProducts?.find(
+          (p) => p.product_id?._id === product._id
+        );
+        if (!storeProduct) {
+          message.error(
+            `${product.product_name} mahsuloti dokonda mavjud emas!`
+          );
+          return;
+        }
+        if (storeProduct.quantity < product.quantity) {
+          message.error(
+            `${product.product.product_name} mahsuloti dokonda yetarli emas!`
+          );
+          return;
         }
       }
+    }
 
-      // Keyin to'lov usuliga qarab saqlash
-      if (paymentMethod === "qarz") {
-        // QARZ uchun
-        const debtorProducts = selectedProducts.map((product) => ({
+    // 2. Mahsulotlarni ayirish
+    const updatePromises = selectedProducts.map(async (product) => {
+      if (location === "skalad") {
+        const newStock = product.stock - product.quantity;
+        return updateProduct({ id: product._id, stock: newStock }).unwrap();
+      } else if (location === "dokon") {
+        const storeProduct = storeProducts?.find(
+          (p) => p.product_id?._id === product._id
+        );
+        return sellProductFromStore({
+          product_id: storeProduct.product_id._id,
+          quantity: product.quantity,
+        }).unwrap();
+      }
+    });
+
+    await Promise.all(updatePromises);
+
+    // 3. Sotuv ma'lumotlarini saqlash
+    if (paymentMethod === "qarz") {
+      const debtorProducts = selectedProducts.map((product) => ({
+        product_id: product._id,
+        product_name: product.product_name,
+        product_quantity: product.quantity,
+        sell_price: product.sell_price,
+        due_date: debtDueDate,
+      }));
+
+      const totalDebtInUSD = debtorProducts.reduce((acc, p) => {
+        return acc + p.sell_price * p.product_quantity;
+      }, 0);
+
+      if (!selectedDebtor) {
+        const debtorPayload = {
+          name: debtorName?.trim(),
+          phone: debtorPhone?.trim(),
+          due_date: debtDueDate,
+          currency: "usd",
+          debt_amount: totalDebtInUSD,
+          products: debtorProducts,
+        };
+        await createDebtor(debtorPayload).unwrap();
+      } else {
+        const debtor = debtors.find((d) => d._id === selectedDebtor);
+        if (!debtor) {
+          message.error("Tanlangan qarzdor topilmadi");
+          return;
+        }
+
+        const newDebtAmount = totalDebtInUSD;
+        const updatedDebtAmount = (debtor.debt_amount || 0) + newDebtAmount;
+        const updatedProducts = [...(debtor.products || []), ...debtorProducts];
+
+        await editDebtor({
+          id: selectedDebtor,
+          body: {
+            debt_amount: updatedDebtAmount,
+            due_date: debtDueDate,
+            products: updatedProducts,
+          },
+        }).unwrap();
+      }
+
+      // QARZ uchun ham sotuv tarixiga yozish
+      const salePromises = selectedProducts.map((product) => {
+        const sale = {
           product_id: product._id,
           product_name: product.product_name,
-          product_quantity: product.quantity,
           sell_price: product.sell_price,
+          quantity: product.quantity,
+          currency: "usd",
+          total_price_sum:
+            product.sell_price * product.quantity * usdRateData?.rate,
+          total_price: product.sell_price * product.quantity,
+          payment_method: "qarz",
+          product_quantity: product.quantity,
+          debtor_name: selectedDebtor
+            ? debtors.find((d) => d._id === selectedDebtor)?.name
+            : debtorName,
+          debtor_phone: selectedDebtor
+            ? debtors.find((d) => d._id === selectedDebtor)?.phone
+            : debtorPhone,
           due_date: debtDueDate,
-        }));
+        };
+        return recordSale(sale).unwrap();
+      });
+      await Promise.all(salePromises);
+    } else {
+      // NAQD yoki PLASTIK uchun
+      const salePromises = selectedProducts.map((product) => {
+        const sale = {
+          product_id: product._id,
+          product_name: product.product_name,
+          sell_price: product.sell_price,
+          quantity: product.quantity,
+          currency: "usd",
+          total_price_sum:
+            product.sell_price * product.quantity * usdRateData?.rate,
+          total_price: product.sell_price * product.quantity,
+          payment_method: paymentMethod,
+          product_quantity: product.quantity,
+          debtor_name: null,
+          debtor_phone: null,
+          due_date: null,
+        };
+        return recordSale(sale).unwrap();
+      });
 
-        const totalDebtInUSD = debtorProducts.reduce((acc, p) => {
-          return acc + p.sell_price * p.product_quantity;
-        }, 0);
-
-        if (!selectedDebtor) {
-          // Yangi qarzdor yaratish
-          const debtorPayload = {
-            name: debtorName?.trim(),
-            phone: debtorPhone?.trim(),
-            due_date: debtDueDate,
-            currency: "usd",
-            debt_amount: totalDebtInUSD,
-            products: debtorProducts,
-          };
-          await createDebtor(debtorPayload).unwrap();
-        } else {
-          // Mavjud qarzdorga qo'shish
-          const debtor = debtors.find((d) => d._id === selectedDebtor);
-          if (!debtor) {
-            message.error("Tanlangan qarzdor topilmadi");
-            return;
-          }
-
-          const newDebtAmount = debtorProducts.reduce((acc, p) => {
-            return acc + p.sell_price * p.product_quantity;
-          }, 0);
-
-          const updatedDebtAmount = (debtor.debt_amount || 0) + newDebtAmount;
-          const updatedProducts = [
-            ...(debtor.products || []),
-            ...debtorProducts,
-          ];
-
-          await editDebtor({
-            id: selectedDebtor,
-            body: {
-              debt_amount: updatedDebtAmount,
-              due_date: debtDueDate,
-              products: updatedProducts,
-            },
-          }).unwrap();
-        }
-      } else {
-        // NAQD yoki PLASTIK uchun
-        const salePromises = selectedProducts.map((product) => {
-          const sale = {
-            product_id: product._id,
-            product_name: product.product_name,
-            sell_price: product.sell_price,
-            quantity: product.quantity,
-            currency: "usd",
-            total_price_sum:
-              product.sell_price * product.quantity * usdRateData?.rate,
-            total_price: product.sell_price * product.quantity,
-            payment_method: paymentMethod,
-            product_quantity: product.quantity,
-            debtor_name: null,
-            debtor_phone: null,
-            due_date: null,
-          };
-          return recordSale(sale).unwrap();
-        });
-
-        await Promise.all(salePromises);
-      }
-
-      setSelectedProducts([]);
-      message.success("Mahsulotlar muvaffaqiyatli sotildi!");
-      setIsModalVisible(false);
-    } catch (error) {
-      console.error("Error:", error);
-      message.error(
-        `Xatolik: ${error.data?.message || "Serverga ulanishda xatolik"}`
-      );
+      await Promise.all(salePromises);
     }
-  };
+
+    // 4. Chekni ko'rsatish
+    setChekModal(true);
+    message.success("Mahsulotlar muvaffaqiyatli sotildi!");
+    setIsModalVisible(false);
+  } catch (error) {
+    console.error("Error:", error);
+    message.error(
+      `Xatolik: ${error.data?.message || "Serverga ulanishda xatolik"}`
+    );
+    // Xatolik bo'lsa ma'lumotlarni refresh qilish
+    productRefetch();
+    storeRefetch();
+  }
+};
 
   const totalAmount = selectedProducts.reduce((acc, product) => {
     return acc + product.sell_price * product.quantity;

@@ -198,33 +198,16 @@ const handleSellProducts = async () => {
         }
         if (storeProduct.quantity < product.quantity) {
           message.error(
-            `${product.product.product_name} mahsuloti dokonda yetarli emas!`
+            `${product.product_name} mahsuloti dokonda yetarli emas!`
           );
           return;
         }
       }
     }
 
-    // 2. Mahsulotlarni ayirish
-    const updatePromises = selectedProducts.map(async (product) => {
-      if (location === "skalad") {
-        const newStock = product.stock - product.quantity;
-        return updateProduct({ id: product._id, stock: newStock }).unwrap();
-      } else if (location === "dokon") {
-        const storeProduct = storeProducts?.find(
-          (p) => p.product_id?._id === product._id
-        );
-        return sellProductFromStore({
-          product_id: storeProduct.product_id._id,
-          quantity: product.quantity,
-        }).unwrap();
-      }
-    });
-
-    await Promise.all(updatePromises);
-
-    // 3. Sotuv ma'lumotlarini saqlash
+    // 2. Sotuv ma'lumotlarini saqlash (ombor o'zgarishidan OLDIN)
     if (paymentMethod === "qarz") {
+      // QARZ uchun FAQAT qarzdorlar jadvaliga yozish
       const debtorProducts = selectedProducts.map((product) => ({
         product_id: product._id,
         product_name: product.product_name,
@@ -238,6 +221,7 @@ const handleSellProducts = async () => {
       }, 0);
 
       if (!selectedDebtor) {
+        // Yangi qarzdor yaratish
         const debtorPayload = {
           name: debtorName?.trim(),
           phone: debtorPhone?.trim(),
@@ -248,6 +232,7 @@ const handleSellProducts = async () => {
         };
         await createDebtor(debtorPayload).unwrap();
       } else {
+        // Mavjud qarzdorga qo'shish
         const debtor = debtors.find((d) => d._id === selectedDebtor);
         if (!debtor) {
           message.error("Tanlangan qarzdor topilmadi");
@@ -268,32 +253,10 @@ const handleSellProducts = async () => {
         }).unwrap();
       }
 
-      // QARZ uchun ham sotuv tarixiga yozish
-      const salePromises = selectedProducts.map((product) => {
-        const sale = {
-          product_id: product._id,
-          product_name: product.product_name,
-          sell_price: product.sell_price,
-          quantity: product.quantity,
-          currency: "usd",
-          total_price_sum:
-            product.sell_price * product.quantity * usdRateData?.rate,
-          total_price: product.sell_price * product.quantity,
-          payment_method: "qarz",
-          product_quantity: product.quantity,
-          debtor_name: selectedDebtor
-            ? debtors.find((d) => d._id === selectedDebtor)?.name
-            : debtorName,
-          debtor_phone: selectedDebtor
-            ? debtors.find((d) => d._id === selectedDebtor)?.phone
-            : debtorPhone,
-          due_date: debtDueDate,
-        };
-        return recordSale(sale).unwrap();
-      });
-      await Promise.all(salePromises);
+      // QARZ uchun sotuv tarixiga YOZILMAYDI
+      // recordSale() chaqirilmaydi
     } else {
-      // NAQD yoki PLASTIK uchun
+      // NAQD yoki PLASTIK uchun sotuv tarixiga yozish
       const salePromises = selectedProducts.map((product) => {
         const sale = {
           product_id: product._id,
@@ -316,15 +279,53 @@ const handleSellProducts = async () => {
       await Promise.all(salePromises);
     }
 
+    // 3. Mahsulotlarni ombordan ayirish (sotuv muvaffaqiyatli bo'lgandan KEYIN)
+    const updatePromises = selectedProducts.map(async (product) => {
+      if (location === "skalad") {
+        const newStock = product.stock - product.quantity;
+        return updateProduct({ id: product._id, stock: newStock }).unwrap();
+      } else if (location === "dokon") {
+        const storeProduct = storeProducts?.find(
+          (p) => p.product_id?._id === product._id
+        );
+        return sellProductFromStore({
+          product_id: storeProduct.product_id._id,
+          quantity: product.quantity,
+        }).unwrap();
+      }
+    });
+
+    await Promise.all(updatePromises);
+
     // 4. Chekni ko'rsatish
     setChekModal(true);
     message.success("Mahsulotlar muvaffaqiyatli sotildi!");
     setIsModalVisible(false);
   } catch (error) {
     console.error("Error:", error);
-    message.error(
-      `Xatolik: ${error.data?.message || "Serverga ulanishda xatolik"}`
-    );
+
+    // Internet yoki server bilan bog'liq xatoliklar
+    if (!navigator.onLine) {
+      message.error(
+        "Internet aloqasi yo'q! Iltimos, internetni tekshiring va qayta urinib ko'ring."
+      );
+    } else if (
+      error.status === "FETCH_ERROR" ||
+      error.originalStatus === "FETCH_ERROR"
+    ) {
+      message.error(
+        "Serverga ulanishda xatolik! Iltimos, qayta urinib ko'ring."
+      );
+    } else if (error.status >= 500) {
+      message.error("Server xatoligi! Iltimos, qayta urinib ko'ring.");
+    } else {
+      message.error(
+        `Tovarni sotishda muammo bo'ldi, qayta urinib ko'ring! Xatolik: ${
+          error.data?.message || "Noma'lum xatolik"
+        }`
+      );
+    }
+
     // Xatolik bo'lsa ma'lumotlarni refresh qilish
     productRefetch();
     storeRefetch();

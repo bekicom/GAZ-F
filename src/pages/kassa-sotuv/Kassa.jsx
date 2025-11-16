@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useRef, useState, useMemo, useCallback } from "react";
 import {
   Input,
   Table,
@@ -9,7 +9,6 @@ import {
   message,
   Form,
   Input as AntdInput,
-  DatePicker,
   Popconfirm,
 } from "antd";
 import {
@@ -41,7 +40,9 @@ import {
   useCreateNasiyaMutation,
   useGetNasiyaQuery,
 } from "../../context/service/nasiya.service";
+
 const { Option } = Select;
+
 export default function Kassa() {
   const [searchTerm, setSearchTerm] = useState("");
   const [selectedProducts, setSelectedProducts] = useState([]);
@@ -55,13 +56,20 @@ export default function Kassa() {
   const [vazvratModalVisible, setVazvratModalVisible] = useState(false);
   const receiptRef = useRef();
   const [debtDueDate, setDebtDueDate] = useState(null);
+  const [location, setLocation] = useState(null);
+  const [sotuvtarixiModalVisible, setSotuvtarixiModalVisible] = useState(false);
+  const [nasiyaModal, setNasiyaModal] = useState(false);
+  const [nasiyaModalVisible, setNasiyaModalVisible] = useState(false);
+  const [nasiyaPaymentMethod, setNasiyaPaymentMethod] = useState("naqd");
+  const [sellPrice, setSellPrice] = useState(null);
+  const [selectedDebtor, setSelectedDebtor] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const {
     data: products,
     isLoading,
     refetch: productRefetch,
   } = useGetAllProductsQuery();
-
   const { data: storeProducts, refetch: storeRefetch } =
     useGetStoreProductsQuery();
   const { data: usdRateData } = useGetUsdRateQuery();
@@ -69,19 +77,11 @@ export default function Kassa() {
   const [recordSale] = useRecordSaleMutation();
   const [sellProductFromStore] = useSellProductFromStoreMutation();
   const [createDebtor] = useCreateDebtorMutation();
-  const [location, setLocation] = useState(null);
-  const [sotuvtarixiModalVisible, setSotuvtarixiModalVisible] = useState(false);
-  const currency = "usd";
-  const [nasiyaModal, setNasiyaModal] = useState(false);
+  const [editDebtor] = useEditDebtorMutation();
+  const { data: debtors = [] } = useGetDebtorsQuery();
   const [createNasiya] = useCreateNasiyaMutation();
   const [completeNasiya] = useCompleteNasiyaMutation();
   const { data: nasiya = [] } = useGetNasiyaQuery();
-  const [nasiyaModalVisible, setNasiyaModalVisible] = useState(false);
-  const [nasiyaPaymentMethod, setNasiyaPaymentMethod] = useState("naqd");
-  const [sellPrice, setSellPrice] = useState(null);
-  const { data: debtors = [] } = useGetDebtorsQuery();
-  const [selectedDebtor, setSelectedDebtor] = useState(null);
-  const [editDebtor] = useEditDebtorMutation();
 
   const handlePrint = useReactToPrint({
     content: () => receiptRef.current,
@@ -93,193 +93,208 @@ export default function Kassa() {
     },
   });
 
-  const filteredProducts = searchTerm
-    ? products?.filter((product) => {
-        const searchWords = searchTerm.toLowerCase().split(" ");
-        const fields = [
-          product.product_name?.toLowerCase() || "",
-          product.barcode?.toLowerCase() || "",
-          product.product_category?.toLowerCase() || "",
-          product.model?.toLowerCase() || "",
-          product.brand_name?.toLowerCase() || "",
+  // Optimallashtirilgan qidiruv funksiyasi - useMemo bilan
+  const filteredProducts = useMemo(() => {
+    if (!searchTerm || !products) return [];
+
+    const searchWords = searchTerm.toLowerCase().split(" ");
+
+    return products.filter((product) => {
+      const fields = [
+        product.product_name?.toLowerCase() || "",
+        product.barcode?.toLowerCase() || "",
+        product.product_category?.toLowerCase() || "",
+        product.model?.toLowerCase() || "",
+        product.brand_name?.toLowerCase() || "",
+      ];
+
+      return searchWords.every((word) =>
+        fields.some((field) => field.includes(word))
+      );
+    });
+  }, [searchTerm, products]);
+
+  // useCallback bilan optimallashtirilgan mahsulot tanlash
+  const handleSelectProduct = useCallback(
+    (product) => {
+      const storeProduct = storeProducts?.find(
+        (p) => p.product_id?._id === product._id
+      );
+      const storeQty = storeProduct?.quantity || 0;
+
+      if (storeQty <= 0) {
+        message.warning(`${product.product_name} mahsuloti dokonda tugagan`);
+        return;
+      }
+
+      setSelectedProducts((prev) => {
+        const exists = prev.find((item) => item._id === product._id);
+        if (exists) {
+          message.info("Bu mahsulot allaqachon tanlangan");
+          return prev;
+        }
+        return [
+          ...prev,
+          {
+            ...product,
+            quantity: 1,
+            sell_price: product.sell_price,
+          },
         ];
-        return searchWords.every((word) =>
-          fields.some((field) => field.includes(word))
-        );
-      })
-    : [];
+      });
 
-  const handleSelectProduct = (product) => {
-    const storeProduct = storeProducts?.find(
-      (p) => p.product_id?._id === product._id
-    );
-    const storeQty = storeProduct?.quantity || 0;
-
-    if (storeQty <= 0) {
-      message.warning(`${product.product_name} mahsuloti dokonda tugagan`);
-      return;
-    }
-
-    const exists = selectedProducts?.find((item) => item._id === product._id);
-    if (!exists) {
-      setSelectedProducts([
-        ...selectedProducts,
-        {
-          ...product,
-          quantity: 1,
-          sell_price: product.sell_price,
-        },
-      ]);
       setSearchTerm("");
-    } else {
-      message.info("Bu mahsulot allaqachon tanlangan");
-    }
-  };
+    },
+    [storeProducts]
+  );
 
-  const handleRemoveProduct = (productId) => {
-    const updatedProducts = selectedProducts.filter(
-      (item) => item._id !== productId
+  const handleRemoveProduct = useCallback((productId) => {
+    setSelectedProducts((prev) =>
+      prev.filter((item) => item._id !== productId)
     );
-    setSelectedProducts(updatedProducts);
-  };
+  }, []);
 
-  const handleQuantityChange = (productId, increment) => {
-    const updatedProducts = selectedProducts.map((item) => {
-      if (item._id === productId) {
-        const newQuantity = item.quantity + increment;
-        return { ...item, quantity: newQuantity > 0 ? newQuantity : 1 };
-      }
-      return item;
-    });
-    setSelectedProducts(updatedProducts);
-  };
+  const handleQuantityChange = useCallback((productId, increment) => {
+    setSelectedProducts((prev) =>
+      prev.map((item) => {
+        if (item._id === productId) {
+          const newQuantity = item.quantity + increment;
+          return { ...item, quantity: newQuantity > 0 ? newQuantity : 1 };
+        }
+        return item;
+      })
+    );
+  }, []);
 
-  const handleSellPriceChange = (productId, newPrice) => {
-    const updatedProducts = selectedProducts.map((item) => {
-      if (item._id === productId) {
-        return {
-          ...item,
-          sell_price: newPrice === "" ? 0 : parseFloat(newPrice) || 0,
-        };
-      }
-      return item;
-    });
-    setSelectedProducts(updatedProducts);
-  };
+  const handleSellPriceChange = useCallback((productId, newPrice) => {
+    setSelectedProducts((prev) =>
+      prev.map((item) => {
+        if (item._id === productId) {
+          return {
+            ...item,
+            sell_price: newPrice === "" ? 0 : parseFloat(newPrice) || 0,
+          };
+        }
+        return item;
+      })
+    );
+  }, []);
 
-  const showModal = () => {
+  const showModal = useCallback(() => {
     setIsModalVisible(true);
-  };
+  }, []);
 
-  const handleCancel = () => {
+  const handleCancel = useCallback(() => {
     setIsModalVisible(false);
-  };
+  }, []);
 
-const handleSellProducts = async () => {
-  try {
-    // 1. Avval validatsiya qilish
+  // Validatsiya funksiyasi - alohida ajratilgan
+  const validateProductStock = useCallback(async () => {
     for (const product of selectedProducts) {
       if (location === "skalad") {
         if (product.stock < product.quantity) {
-          message.error(
+          throw new Error(
             `${product.product_name} mahsuloti skaladda yetarli emas!`
           );
-          return;
         }
       } else if (location === "dokon") {
         const storeProduct = storeProducts?.find(
           (p) => p.product_id?._id === product._id
         );
         if (!storeProduct) {
-          message.error(
+          throw new Error(
             `${product.product_name} mahsuloti dokonda mavjud emas!`
           );
-          return;
         }
         if (storeProduct.quantity < product.quantity) {
-          message.error(
+          throw new Error(
             `${product.product_name} mahsuloti dokonda yetarli emas!`
           );
-          return;
         }
       }
     }
+  }, [selectedProducts, location, storeProducts]);
 
-    // 2. Sotuv ma'lumotlarini saqlash (ombor o'zgarishidan OLDIN)
-    if (paymentMethod === "qarz") {
-      // QARZ uchun FAQAT qarzdorlar jadvaliga yozish
-      const debtorProducts = selectedProducts.map((product) => ({
+  // Qarz yaratish funksiyasi - alohida ajratilgan
+  const processDebtSale = useCallback(async () => {
+    const debtorProducts = selectedProducts.map((product) => ({
+      product_id: product._id,
+      product_name: product.product_name,
+      product_quantity: product.quantity,
+      sell_price: product.sell_price,
+      due_date: debtDueDate,
+    }));
+
+    const totalDebtInUSD = debtorProducts.reduce(
+      (acc, p) => acc + p.sell_price * p.product_quantity,
+      0
+    );
+
+    if (!selectedDebtor) {
+      const debtorPayload = {
+        name: debtorName?.trim(),
+        phone: debtorPhone?.trim(),
+        due_date: debtDueDate,
+        currency: "usd",
+        debt_amount: totalDebtInUSD,
+        products: debtorProducts,
+      };
+      await createDebtor(debtorPayload).unwrap();
+    } else {
+      const debtor = debtors.find((d) => d._id === selectedDebtor);
+      if (!debtor) {
+        throw new Error("Tanlangan qarzdor topilmadi");
+      }
+
+      const updatedDebtAmount = (debtor.debt_amount || 0) + totalDebtInUSD;
+      const updatedProducts = [...(debtor.products || []), ...debtorProducts];
+
+      await editDebtor({
+        id: selectedDebtor,
+        body: {
+          debt_amount: updatedDebtAmount,
+          due_date: debtDueDate,
+          products: updatedProducts,
+        },
+      }).unwrap();
+    }
+  }, [
+    selectedProducts,
+    debtDueDate,
+    selectedDebtor,
+    debtorName,
+    debtorPhone,
+    debtors,
+    createDebtor,
+    editDebtor,
+  ]);
+
+  // Oddiy sotuv funksiyasi - alohida ajratilgan
+  const processRegularSale = useCallback(async () => {
+    const salePromises = selectedProducts.map((product) => {
+      const sale = {
         product_id: product._id,
         product_name: product.product_name,
-        product_quantity: product.quantity,
         sell_price: product.sell_price,
-        due_date: debtDueDate,
-      }));
+        quantity: product.quantity,
+        currency: "usd",
+        total_price_sum:
+          product.sell_price * product.quantity * usdRateData?.rate,
+        total_price: product.sell_price * product.quantity,
+        payment_method: paymentMethod,
+        product_quantity: product.quantity,
+        debtor_name: null,
+        debtor_phone: null,
+        due_date: null,
+      };
+      return recordSale(sale).unwrap();
+    });
 
-      const totalDebtInUSD = debtorProducts.reduce((acc, p) => {
-        return acc + p.sell_price * p.product_quantity;
-      }, 0);
+    await Promise.all(salePromises);
+  }, [selectedProducts, paymentMethod, usdRateData, recordSale]);
 
-      if (!selectedDebtor) {
-        // Yangi qarzdor yaratish
-        const debtorPayload = {
-          name: debtorName?.trim(),
-          phone: debtorPhone?.trim(),
-          due_date: debtDueDate,
-          currency: "usd",
-          debt_amount: totalDebtInUSD,
-          products: debtorProducts,
-        };
-        await createDebtor(debtorPayload).unwrap();
-      } else {
-        // Mavjud qarzdorga qo'shish
-        const debtor = debtors.find((d) => d._id === selectedDebtor);
-        if (!debtor) {
-          message.error("Tanlangan qarzdor topilmadi");
-          return;
-        }
-
-        const newDebtAmount = totalDebtInUSD;
-        const updatedDebtAmount = (debtor.debt_amount || 0) + newDebtAmount;
-        const updatedProducts = [...(debtor.products || []), ...debtorProducts];
-
-        await editDebtor({
-          id: selectedDebtor,
-          body: {
-            debt_amount: updatedDebtAmount,
-            due_date: debtDueDate,
-            products: updatedProducts,
-          },
-        }).unwrap();
-      }
-
-      // QARZ uchun sotuv tarixiga YOZILMAYDI
-      // recordSale() chaqirilmaydi
-    } else {
-      // NAQD yoki PLASTIK uchun sotuv tarixiga yozish
-      const salePromises = selectedProducts.map((product) => {
-        const sale = {
-          product_id: product._id,
-          product_name: product.product_name,
-          sell_price: product.sell_price,
-          quantity: product.quantity,
-          currency: "usd",
-          total_price_sum:
-            product.sell_price * product.quantity * usdRateData?.rate,
-          total_price: product.sell_price * product.quantity,
-          payment_method: paymentMethod,
-          product_quantity: product.quantity,
-          debtor_name: null,
-          debtor_phone: null,
-          due_date: null,
-        };
-        return recordSale(sale).unwrap();
-      });
-
-      await Promise.all(salePromises);
-    }
-
-    // 3. Mahsulotlarni ombordan ayirish (sotuv muvaffaqiyatli bo'lgandan KEYIN)
+  // Omborni yangilash funksiyasi - alohida ajratilgan
+  const updateInventory = useCallback(async () => {
     const updatePromises = selectedProducts.map(async (product) => {
       if (location === "skalad") {
         const newStock = product.stock - product.quantity;
@@ -296,45 +311,157 @@ const handleSellProducts = async () => {
     });
 
     await Promise.all(updatePromises);
+  }, [
+    selectedProducts,
+    location,
+    storeProducts,
+    updateProduct,
+    sellProductFromStore,
+  ]);
 
-    // 4. Chekni ko'rsatish
-    setChekModal(true);
-    message.success("Mahsulotlar muvaffaqiyatli sotildi!");
-    setIsModalVisible(false);
-  } catch (error) {
-    console.error("Error:", error);
-
-    // Internet yoki server bilan bog'liq xatoliklar
-    if (!navigator.onLine) {
-      message.error(
-        "Internet aloqasi yo'q! Iltimos, internetni tekshiring va qayta urinib ko'ring."
-      );
-    } else if (
-      error.status === "FETCH_ERROR" ||
-      error.originalStatus === "FETCH_ERROR"
-    ) {
-      message.error(
-        "Serverga ulanishda xatolik! Iltimos, qayta urinib ko'ring."
-      );
-    } else if (error.status >= 500) {
-      message.error("Server xatoligi! Iltimos, qayta urinib ko'ring.");
-    } else {
-      message.error(
-        `Tovarni sotishda muammo bo'ldi, qayta urinib ko'ring! Xatolik: ${
-          error.data?.message || "Noma'lum xatolik"
-        }`
-      );
+  // Asosiy sotish funksiyasi - optimallashtirilgan
+  const handleSellProducts = useCallback(async () => {
+    if (isProcessing) {
+      message.warning("Iltimos, jarayon tugashini kuting...");
+      return;
     }
 
-    // Xatolik bo'lsa ma'lumotlarni refresh qilish
-    productRefetch();
-    storeRefetch();
-  }
-};
+    setIsProcessing(true);
 
-  const totalAmount = selectedProducts.reduce((acc, product) => {
-    return acc + product.sell_price * product.quantity;
-  }, 0);
+    try {
+      // 1. Validatsiya
+      await validateProductStock();
+
+      // 2. Sotuv ma'lumotlarini saqlash
+      if (paymentMethod === "qarz") {
+        await processDebtSale();
+      } else {
+        await processRegularSale();
+      }
+
+      // 3. Omborni yangilash
+      await updateInventory();
+
+      // 4. Muvaffaqiyatli tugallash
+      setChekModal(true);
+      message.success("Mahsulotlar muvaffaqiyatli sotildi!");
+      setIsModalVisible(false);
+    } catch (error) {
+      console.error("Error:", error);
+
+      if (!navigator.onLine) {
+        message.error("Internet aloqasi yo'q! Iltimos, internetni tekshiring.");
+      } else if (error.message) {
+        message.error(error.message);
+      } else if (
+        error.status === "FETCH_ERROR" ||
+        error.originalStatus === "FETCH_ERROR"
+      ) {
+        message.error("Serverga ulanishda xatolik!");
+      } else if (error.status >= 500) {
+        message.error("Server xatoligi!");
+      } else {
+        message.error(`Xatolik: ${error.data?.message || "Noma'lum xatolik"}`);
+      }
+
+      // Xatolik bo'lsa ma'lumotlarni refresh qilish
+      productRefetch();
+      storeRefetch();
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [
+    isProcessing,
+    validateProductStock,
+    paymentMethod,
+    processDebtSale,
+    processRegularSale,
+    updateInventory,
+    productRefetch,
+    storeRefetch,
+  ]);
+
+  // Umumiy summani hisoblash - useMemo bilan
+  const totalAmount = useMemo(() => {
+    return selectedProducts.reduce((acc, product) => {
+      return acc + product.sell_price * product.quantity;
+    }, 0);
+  }, [selectedProducts]);
+
+  // Nasiya yaratish - optimallashtirilgan
+  const handleCreateNasiya = useCallback(
+    async (e) => {
+      e.preventDefault();
+      const name = e.target.name.value;
+      const nasiyaLocation = e.target.location.value;
+
+      if (!name) {
+        message.error("Ismni to'ldiring!");
+        return;
+      }
+      if (!nasiyaLocation) {
+        message.error("Joylashuvni to'ldiring!");
+        return;
+      }
+
+      try {
+        for (const product of selectedProducts) {
+          if (nasiyaLocation === "skalad") {
+            if (product.stock < product.quantity) {
+              message.error(
+                `${product.product_name} mahsuloti skaladda yetarli emas!`
+              );
+              return;
+            }
+            await createNasiya({
+              product_id: product._id,
+              product_name: product.product_name,
+              quantity: product.quantity,
+              location: nasiyaLocation,
+              nasiya_name: name,
+            });
+          } else {
+            const storeProduct = storeProducts?.find(
+              (p) => p.product_id?._id === product._id
+            );
+            if (!storeProduct) {
+              message.error(
+                `${product.product_name} mahsuloti dokonda mavjud emas!`
+              );
+              return;
+            }
+            if (storeProduct.quantity < product.quantity) {
+              message.error(
+                `${product.product_name} mahsuloti dokonda yetarli emas!`
+              );
+              return;
+            }
+            await createNasiya({
+              product_id: product._id,
+              quantity: product.quantity,
+              location: nasiyaLocation,
+              nasiya_name: name,
+            });
+          }
+        }
+        message.success("Mahsulotlar muvaffaqiyatli nasiyaga berildi!");
+        setNasiyaModal(false);
+        setSelectedProducts([]);
+        storeRefetch();
+        productRefetch();
+      } catch (error) {
+        console.error("Xatolik:", error);
+        message.error("Xatolik yuz berdi!");
+      }
+    },
+    [
+      selectedProducts,
+      storeProducts,
+      createNasiya,
+      storeRefetch,
+      productRefetch,
+    ]
+  );
 
   return (
     <div className="kassa-container">
@@ -343,7 +470,7 @@ const handleSellProducts = async () => {
         style={{ display: "flex", justifyContent: "center" }}
         onCancel={() => setChekModal(false)}
         footer={[
-          <Button type="primary" onClick={handlePrint}>
+          <Button key="print" type="primary" onClick={handlePrint}>
             Chop etish
           </Button>,
         ]}
@@ -482,72 +609,7 @@ const handleSellProducts = async () => {
         footer={[]}
         onCancel={() => setNasiyaModal(false)}
       >
-        <form
-          className="modal_form"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            const name = e.target.name.value;
-            const location = e.target.location.value;
-
-            if (!name) {
-              message.error("Ismni to'ldiring!");
-              return;
-            }
-            if (!location) {
-              message.error("Joylashuvni to'ldiring!");
-              return;
-            }
-            try {
-              for (const product of selectedProducts) {
-                if (location === "skalad") {
-                  if (product.stock < product.quantity) {
-                    message.error(
-                      `${product.product_name} mahsuloti skaladda yetarli emas!`
-                    );
-                    return;
-                  }
-                  await createNasiya({
-                    product_id: product._id,
-                    product_name: product.product_name,
-                    quantity: product.quantity,
-                    location: location,
-                    nasiya_name: name,
-                  });
-                } else {
-                  const storeProduct = storeProducts?.find(
-                    (p) => p.product_id?._id === product._id
-                  );
-                  if (!storeProduct) {
-                    message.error(
-                      `${product.product_name} mahsuloti dokonda mavjud emas!`
-                    );
-                    return;
-                  }
-                  if (storeProduct.quantity < product.quantity) {
-                    message.error(
-                      `${product.product_name} mahsuloti dokonda yetarli emas!`
-                    );
-                    return;
-                  }
-                  await createNasiya({
-                    product_id: product._id,
-                    quantity: product.quantity,
-                    location: location,
-                    nasiya_name: name,
-                  });
-                }
-              }
-              message.success("Mahsulotlar muvaffaqiyatli nasiyaga berildi!");
-              setNasiyaModal(false);
-              setSelectedProducts([]);
-              storeRefetch();
-              productRefetch();
-            } catch (error) {
-              console.error("Xatolik:", error);
-              message.error("Xatolik yuz berdi, iltimos qayta urinib ko'ring!");
-            }
-          }}
-        >
+        <form className="modal_form" onSubmit={handleCreateNasiya}>
           <p>Nasiyaga oluvchi ismi</p>
           <input placeholder="Ism" required type="text" name="name" />
           <select required name="location">
@@ -687,7 +749,7 @@ const handleSellProducts = async () => {
       </div>
 
       <Card
-        title="Kassa"
+        title=""
         bordered={false}
         style={{
           width: "100%",
@@ -696,8 +758,6 @@ const handleSellProducts = async () => {
           flexDirection: "column-reverse",
           alignItems: "stretch",
           backgroundColor: "#0F4C81",
-          width: "80%",
-          height: "100%",
           color: "white",
           borderRadius: 0.1,
           overflow: "auto",
@@ -858,8 +918,10 @@ const handleSellProducts = async () => {
               type="primary"
               onClick={showModal}
               style={{ marginTop: 20 }}
+              disabled={isProcessing}
+              loading={isProcessing}
             >
-              Sotish
+              {isProcessing ? "Kutilmoqda..." : "Sotish"}
             </Button>
           </div>
         )}
@@ -868,6 +930,9 @@ const handleSellProducts = async () => {
           visible={isModalVisible}
           onOk={handleSellProducts}
           onCancel={handleCancel}
+          confirmLoading={isProcessing}
+          okButtonProps={{ disabled: isProcessing }}
+          cancelButtonProps={{ disabled: isProcessing }}
         >
           <Form layout="vertical">
             <Form.Item label="To'lov usuli">
@@ -875,6 +940,7 @@ const handleSellProducts = async () => {
                 value={paymentMethod}
                 onChange={(value) => setPaymentMethod(value)}
                 style={{ width: "100%" }}
+                disabled={isProcessing}
               >
                 <Option value="naqd">Naqd</Option>
                 <Option value="plastik">Karta</Option>
@@ -911,6 +977,7 @@ const handleSellProducts = async () => {
                       );
                     }}
                     style={{ width: "100%" }}
+                    disabled={isProcessing}
                   >
                     <Option value="new">➕ Yangi xaridor</Option>
                     {debtors.map((item) => (
@@ -927,12 +994,14 @@ const handleSellProducts = async () => {
                       <AntdInput
                         value={debtorName}
                         onChange={(e) => setDebtorName(e.target.value)}
+                        disabled={isProcessing}
                       />
                     </Form.Item>
                     <Form.Item label="Telefon raqami">
                       <AntdInput
                         value={debtorPhone}
                         onChange={(e) => setDebtorPhone(e.target.value)}
+                        disabled={isProcessing}
                       />
                     </Form.Item>
                   </>
@@ -943,6 +1012,7 @@ const handleSellProducts = async () => {
                     type="date"
                     value={debtDueDate}
                     onChange={(e) => setDebtDueDate(e.target.value)}
+                    disabled={isProcessing}
                   />
                 </Form.Item>
               </>
@@ -953,6 +1023,7 @@ const handleSellProducts = async () => {
                 value={location}
                 onChange={(value) => setLocation(value)}
                 style={{ width: "100%" }}
+                disabled={isProcessing}
               >
                 <Option value="skalad">Skalad</Option>
                 <Option value="dokon">Dokon</Option>

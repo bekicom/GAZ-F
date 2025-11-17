@@ -2,7 +2,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 
 const baseQuery = fetchBaseQuery({
-  baseUrl: "https://gaz-b.vercel.app/api",
+  baseUrl: "https://gaz-b.medme.uz/api",
   // baseUrl:"http://localhost:8055/api",
   prepareHeaders: (headers, { getState }) => {
     const token = localStorage.getItem("access_token");

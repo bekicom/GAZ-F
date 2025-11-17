@@ -12,7 +12,7 @@ export const Login = memo(() => {
 
     try {
       const res = await axios.post(
-        "https://gaz-b.vercel.app/api/login",
+        "https://gaz-b.medme.uz/api/login",
         // "http://localhost:8055/api/login",
         value
       );
@@ -59,4 +59,4 @@ export const Login = memo(() => {
     </div>
   );
 });
-// 
+//
